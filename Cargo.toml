@@ -1,0 +1,10 @@
+[package]
+name = "matchmaking"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.4", features = ["ws"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"
+uuid = { version = "1.17.0", features = ["v4"] }
