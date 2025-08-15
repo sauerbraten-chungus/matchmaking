@@ -13,11 +13,17 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, RwLock},
 };
-use tokio::sync::mpsc;
+use tokio::{
+    sync::mpsc,
+    time::{Duration, sleep},
+};
+use tracing::{debug, info};
 
-enum JoinQueueError {
+#[derive(Debug)]
+enum QueueError {
     AlreadyInQueue,
     LockPoisoned,
+    NotInQueue,
 }
 
 struct Player {
@@ -38,12 +44,19 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_thread_ids(true)
+        .init();
+
     let state = AppState {
         matchmaking_state: Arc::new(RwLock::new(MatchmakingState {
             queue: VecDeque::new(),
             players: HashMap::new(),
         })),
     };
+
+    start_matchmaking(state.matchmaking_state.clone());
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
@@ -75,6 +88,7 @@ async fn handle_socket(socket: WebSocket, state: State<AppState>) {
 
     match join_queue(&player_id, tx.clone(), &state.matchmaking_state).await {
         Ok(queue_position) => {
+            info!("Joined queue at {}", queue_position);
             if tx
                 .send(Message::Text(Utf8Bytes::from_static("Success")))
                 .is_err()
@@ -92,8 +106,14 @@ async fn handle_socket(socket: WebSocket, state: State<AppState>) {
     while let Some(Ok(msg)) = ws_receiver.next().await {
         if let Message::Text(text) = msg {
             match text.as_str() {
-                "disconnect" => {
+                "hi" => {
                     let _ = tx.send(Message::Text(Utf8Bytes::from_static("die")));
+                }
+                "pos" => {
+                    let pos = get_position(&player_id, &state.matchmaking_state)
+                        .await
+                        .unwrap();
+                    let _ = tx.send(Message::text(pos.to_string()));
                 }
                 _ => {
                     todo!();
@@ -101,19 +121,63 @@ async fn handle_socket(socket: WebSocket, state: State<AppState>) {
             }
         }
     }
+
+    if let Err(e) = leave_queue(&player_id, &state.matchmaking_state).await {
+        eprintln!("Failed to remove player {} from queue: {:?}", player_id, e);
+    }
+}
+
+fn start_matchmaking(state: Arc<RwLock<MatchmakingState>>) {
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(2)).await;
+
+            match process_matchmaking(&state).await {
+                Ok(()) => {
+                    info!("Successful process matchmaking");
+                }
+                Err(err) => {
+                    debug!("Error {:?}", err);
+                }
+            };
+        }
+    });
+}
+
+async fn process_matchmaking(
+    matchmaking_state: &Arc<RwLock<MatchmakingState>>,
+) -> Result<(), QueueError> {
+    let mut state = matchmaking_state
+        .write()
+        .map_err(|_| QueueError::LockPoisoned)?;
+
+    if state.queue.len() >= 1 {
+        if let Some(player_id) = state.queue.pop_front() {
+            info!("Player {} found a match", player_id);
+            if let Some(player) = state.players.get(&player_id) {
+                let _ = player.tx.send(Message::text("Player found message"));
+                // Remove from players
+                let _ = state.players.remove(&player_id);
+            };
+        };
+    } else {
+        info!("No players in queue :(");
+    };
+
+    Ok(())
 }
 
 async fn join_queue(
     player_id: &str,
     tx: mpsc::UnboundedSender<Message>,
     matchmaking_state: &Arc<RwLock<MatchmakingState>>,
-) -> Result<(usize), JoinQueueError> {
+) -> Result<(usize), QueueError> {
     let mut state = matchmaking_state
         .write()
-        .map_err(|_| JoinQueueError::LockPoisoned)?;
+        .map_err(|_| QueueError::LockPoisoned)?;
 
     if state.queue.contains(&player_id.to_string()) {
-        return Err(JoinQueueError::AlreadyInQueue);
+        return Err(QueueError::AlreadyInQueue);
     }
 
     state.queue.push_back(player_id.to_string());
@@ -126,5 +190,40 @@ async fn join_queue(
         },
     );
 
+    info!("Inserted {} into players", player_id.to_string());
+
     Ok(state.queue.len())
+}
+
+async fn leave_queue(
+    player_id: &str,
+    state: &Arc<RwLock<MatchmakingState>>,
+) -> Result<(), QueueError> {
+    let mut state = state.write().map_err(|_| QueueError::LockPoisoned)?;
+
+    if let Some(index) = state.queue.iter().position(|id| id == player_id) {
+        state.queue.remove(index);
+    } else {
+        return Err(QueueError::NotInQueue);
+    }
+
+    state.players.remove(player_id);
+
+    info!("Player {} leaving queue", player_id);
+    Ok(())
+}
+
+async fn get_position(
+    player_id: &str,
+    state: &Arc<RwLock<MatchmakingState>>,
+) -> Result<usize, QueueError> {
+    let state = state.write().map_err(|_| QueueError::LockPoisoned)?;
+
+    let index = state
+        .queue
+        .iter()
+        .position(|id| id == player_id)
+        .ok_or(QueueError::NotInQueue)?;
+
+    Ok(index)
 }
