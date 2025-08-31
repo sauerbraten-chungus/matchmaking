@@ -42,6 +42,7 @@ struct WebsocketResponse {
 enum EventType {
     JoinQueue,
     MatchFound,
+    MatchCreated,
     JoinError,
     QueuePosition,
     LeaveQueue,
@@ -55,6 +56,12 @@ struct JoinQueueData {
 #[derive(Serialize)]
 struct MatchFoundData {
     message: String,
+}
+
+#[derive(Serialize)]
+struct MatchCreatedData {
+    ip: String,
+    port: String,
 }
 
 #[derive(Serialize)]
@@ -141,6 +148,10 @@ async fn handle_socket(
                         message: "Match Found xD".to_string(),
                     })
                     .unwrap(),
+                },
+                MatchmakingResponse::MatchCreated(match_data) => WebsocketResponse {
+                    event_type: EventType::MatchCreated,
+                    data: serde_json::to_value(match_data).unwrap(),
                 },
                 MatchmakingResponse::JoinError(err_str) => WebsocketResponse {
                     event_type: EventType::JoinError,

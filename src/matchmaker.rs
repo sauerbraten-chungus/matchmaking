@@ -1,5 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PrefixComponent,
+};
 
+use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time};
 use tracing::{error, info};
 
@@ -7,6 +11,7 @@ pub struct Matchmaker {
     queue: VecDeque<String>,
     players: HashMap<String, Player>,
     receiver: mpsc::UnboundedReceiver<MatchmakingMessage>,
+    http_client: reqwest::Client,
 }
 
 struct Player {
@@ -22,10 +27,17 @@ pub enum MatchmakingMessage {
 
 pub enum MatchmakingResponse {
     MatchFound,
+    MatchCreated(MatchCreatedData),
     JoinSuccess(usize),
     JoinError(String),
     LeaveSuccess,
     PositionSuccess(usize),
+}
+
+#[derive(Serialize)]
+pub struct MatchCreatedData {
+    pub ip: String,
+    pub port: String,
 }
 
 #[derive(Debug)]
@@ -48,23 +60,42 @@ pub struct LeaveRequest {
     pub id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OrchestratorContainerResponse {
+    Success(ContainerSuccessData),
+    Error(ContainerErrorData),
+}
+
+#[derive(Deserialize)]
+struct ContainerSuccessData {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct ContainerErrorData {
+    error: String,
+}
+
 impl Matchmaker {
     pub fn new(rx: mpsc::UnboundedReceiver<MatchmakingMessage>) {
         let mut matchmaker = Matchmaker {
             queue: VecDeque::new(),
             players: HashMap::new(),
             receiver: rx,
+            http_client: reqwest::Client::new(),
         };
 
         tokio::spawn(async move { matchmaker.run().await });
     }
 
     async fn run(mut self) {
+        let mut interval = time::interval(time::Duration::from_secs(5));
+
         loop {
-            let mut interval = time::interval(time::Duration::from_secs(5));
             tokio::select! {
                 _ = interval.tick() => {
-                    self.process_matchmaking();
+                    self.process_matchmaking().await;
                 }
                 Some(msg) = self.receiver.recv() => {
                     if let Err(e) = self.receive(msg) {
@@ -85,13 +116,56 @@ impl Matchmaker {
         }
     }
 
-    fn process_matchmaking(&mut self) {
-        if self.queue.len() >= 1 {
-            if let Some(player_id) = self.queue.pop_front() {
-                info!("Player {} found a match", player_id);
-                if let Some(player) = self.players.get(&player_id) {
-                    let _ = player.tx.send(MatchmakingResponse::MatchFound);
-                    let _ = self.players.remove(&player_id);
+    async fn process_matchmaking(&mut self) {
+        // TODO: batch players into Match, broadcast game server IP
+
+        const PLAYERS_PER_MATCH: usize = 1;
+
+        if self.queue.len() >= PLAYERS_PER_MATCH {
+            let mut matched_players = Vec::new();
+
+            for _ in 0..PLAYERS_PER_MATCH {
+                if let Some(player_id) = self.queue.pop_front() {
+                    info!("Player {} put in match_players", player_id);
+                    if let Some(player) = self.players.get(&player_id) {
+                        matched_players.push((player_id, player.tx.clone()));
+                    }
+                }
+            }
+
+            let orchestrator_url = std::env::var("CHUNGUSTRATOR_URL")
+                .unwrap_or_else(|_| "http://localhost:7000/create".to_string());
+
+            let http_response = self.http_client.post(orchestrator_url).send().await;
+            match http_response {
+                Ok(response) => match response.json::<OrchestratorContainerResponse>().await {
+                    Ok(OrchestratorContainerResponse::Success(data)) => {
+                        info!("Game server container created with id {}", data.id);
+
+                        for (player_id, player_tx) in matched_players {
+                            info!("Sending server deets to {}", player_id);
+                            player_tx.send(MatchmakingResponse::MatchCreated(MatchCreatedData {
+                                ip: "kappa chungite".to_string(),
+                                port: "penis".to_string(),
+                            }));
+                            self.players.remove(&player_id);
+                        }
+                    }
+                    Ok(OrchestratorContainerResponse::Error(data)) => {
+                        error!(
+                            "Error creating game server, putting players back: {}",
+                            data.error
+                        );
+                        for (player_id, _) in matched_players {
+                            self.queue.push_back(player_id);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error converting response: {}", e);
+                    }
+                },
+                Err(e) => {
+                    error!("Error getting http response from orchestrator: {}", e);
                 }
             }
         } else {
