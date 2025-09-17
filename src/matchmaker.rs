@@ -36,8 +36,9 @@ pub enum MatchmakingResponse {
 
 #[derive(Serialize)]
 pub struct MatchCreatedData {
-    pub ip: String,
-    pub port: String,
+    pub wan_ip: String,
+    pub lan_ip: String,
+    pub port: u16,
 }
 
 #[derive(Debug)]
@@ -70,6 +71,9 @@ enum OrchestratorContainerResponse {
 #[derive(Deserialize)]
 struct ContainerSuccessData {
     id: String,
+    wan_ip: String,
+    lan_ip: String,
+    port: u16,
 }
 
 #[derive(Deserialize)]
@@ -144,10 +148,15 @@ impl Matchmaker {
 
                         for (player_id, player_tx) in matched_players {
                             info!("Sending server deets to {}", player_id);
-                            player_tx.send(MatchmakingResponse::MatchCreated(MatchCreatedData {
-                                ip: "kappa chungite".to_string(),
-                                port: "penis".to_string(),
-                            }));
+                            if let Err(e) = player_tx.send(MatchmakingResponse::MatchCreated(
+                                MatchCreatedData {
+                                    wan_ip: data.wan_ip.clone(),
+                                    lan_ip: data.lan_ip.clone(),
+                                    port: data.port,
+                                },
+                            )) {
+                                error!("Error sending MatchCreatedData to player: {}", e);
+                            }
                             self.players.remove(&player_id);
                         }
                     }
