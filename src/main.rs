@@ -2,26 +2,18 @@ use axum::{
     Router,
     extract::{
         State, WebSocketUpgrade,
-        ws::{Message, Utf8Bytes, WebSocket},
+        ws::{Message, WebSocket},
     },
-    http,
     response::Response,
     routing::{any, get},
 };
 use futures_util::{SinkExt, StreamExt};
 use matchmaker::MatchmakingResponse;
+use matchmaker::chungustrator::chungustrator_client::ChungustratorClient;
 use serde::{Deserialize, Serialize};
-use serde_json::{Serializer, json};
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, RwLock},
-    time,
-};
-use tokio::{
-    sync::mpsc,
-    time::{Duration, sleep},
-};
-use tracing::{debug, error, info, instrument::WithSubscriber};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tracing::error;
 
 mod matchmaker;
 
@@ -91,7 +83,6 @@ enum ClientMessage {
 #[derive(Clone)]
 struct AppState {
     tx: mpsc::UnboundedSender<matchmaker::MatchmakingMessage>,
-    http_client: reqwest::Client,
 }
 
 #[tokio::main]
@@ -101,13 +92,19 @@ async fn main() {
         .with_thread_ids(true)
         .init();
 
-    let (tx, rx) = mpsc::unbounded_channel();
-    matchmaker::Matchmaker::new(rx);
+    // Get orchestrator gRPC address from environment or use default
+    let orchestrator_addr =
+        std::env::var("CHUNGUSTRATOR_URL").unwrap_or_else(|_| "http://localhost:7000".to_string());
 
-    let state = Arc::new(AppState {
-        http_client: reqwest::Client::new(),
-        tx,
-    });
+    // Create gRPC client
+    let grpc_client = ChungustratorClient::connect(orchestrator_addr)
+        .await
+        .expect("Failed to connect to orchestrator gRPC service");
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    matchmaker::Matchmaker::new(rx, grpc_client);
+
+    let state = Arc::new(AppState { tx });
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
@@ -119,14 +116,11 @@ async fn main() {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, state: State<Arc<AppState>>) -> Response {
-    ws.on_upgrade(move |websocket| {
-        handle_socket(websocket, state.http_client.clone(), state.tx.clone())
-    })
+    ws.on_upgrade(move |websocket| handle_socket(websocket, state.tx.clone()))
 }
 
 async fn handle_socket(
     socket: WebSocket,
-    http_client: reqwest::Client,
     matchmaker_tx: mpsc::UnboundedSender<matchmaker::MatchmakingMessage>,
 ) {
     let player_id = uuid::Uuid::new_v4().to_string();

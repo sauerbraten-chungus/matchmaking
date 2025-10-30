@@ -1,0 +1,17 @@
+syntax = "proto3";
+package chungustrator;
+
+service Chungustrator {
+    rpc CreateMatch(MatchRequest) returns (MatchResponse);
+}
+
+message MatchRequest {
+    map<string, string> auth_codes = 1;
+}
+
+message MatchResponse {
+    string id = 1;
+    string ip_address = 2;
+    string lan_address = 3;
+    uint32 port = 4;
+}

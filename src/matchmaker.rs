@@ -7,11 +7,19 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time};
 use tracing::{error, info};
 
+// Include the generated protobuf code
+pub mod chungustrator {
+    tonic::include_proto!("chungustrator");
+}
+
+use chungustrator::chungustrator_client::ChungustratorClient;
+use tonic::transport::Channel;
+
 pub struct Matchmaker {
     queue: VecDeque<String>,
     players: HashMap<String, Player>,
     receiver: mpsc::UnboundedReceiver<MatchmakingMessage>,
-    http_client: reqwest::Client,
+    grpc_client: ChungustratorClient<Channel>,
 }
 
 struct Player {
@@ -61,33 +69,16 @@ pub struct LeaveRequest {
     pub id: String,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum OrchestratorContainerResponse {
-    Success(ContainerSuccessData),
-    Error(ContainerErrorData),
-}
-
-#[derive(Deserialize)]
-struct ContainerSuccessData {
-    id: String,
-    wan_ip: String,
-    lan_ip: String,
-    port: u16,
-}
-
-#[derive(Deserialize)]
-struct ContainerErrorData {
-    error: String,
-}
-
 impl Matchmaker {
-    pub fn new(rx: mpsc::UnboundedReceiver<MatchmakingMessage>) {
+    pub fn new(
+        rx: mpsc::UnboundedReceiver<MatchmakingMessage>,
+        grpc_client: ChungustratorClient<Channel>,
+    ) {
         let mut matchmaker = Matchmaker {
             queue: VecDeque::new(),
             players: HashMap::new(),
             receiver: rx,
-            http_client: reqwest::Client::new(),
+            grpc_client,
         };
 
         tokio::spawn(async move { matchmaker.run().await });
@@ -127,54 +118,49 @@ impl Matchmaker {
 
         if self.queue.len() >= PLAYERS_PER_MATCH {
             let mut matched_players = Vec::new();
+            let mut auth_codes = HashMap::new();
 
             for _ in 0..PLAYERS_PER_MATCH {
                 if let Some(player_id) = self.queue.pop_front() {
                     info!("Player {} put in match_players", player_id);
                     if let Some(player) = self.players.get(&player_id) {
-                        matched_players.push((player_id, player.tx.clone()));
+                        matched_players.push((player_id.clone(), player.tx.clone()));
+                        // TODO: Generate proper auth codes for each player
+                        auth_codes.insert(player_id, String::from("auth_token_placeholder"));
                     }
                 }
             }
 
-            let orchestrator_url = std::env::var("CHUNGUSTRATOR_URL")
-                .unwrap_or_else(|_| "http://localhost:7000/create".to_string());
+            // Create the gRPC request
+            let request = tonic::Request::new(chungustrator::MatchRequest { auth_codes });
 
-            let http_response = self.http_client.post(orchestrator_url).send().await;
-            match http_response {
-                Ok(response) => match response.json::<OrchestratorContainerResponse>().await {
-                    Ok(OrchestratorContainerResponse::Success(data)) => {
-                        info!("Game server container created with id {}", data.id);
+            match self.grpc_client.create_match(request).await {
+                Ok(response) => {
+                    let match_data = response.into_inner();
+                    info!("Game server container created with id {}", match_data.id);
 
-                        for (player_id, player_tx) in matched_players {
-                            info!("Sending server deets to {}", player_id);
-                            if let Err(e) = player_tx.send(MatchmakingResponse::MatchCreated(
-                                MatchCreatedData {
-                                    wan_ip: data.wan_ip.clone(),
-                                    lan_ip: data.lan_ip.clone(),
-                                    port: data.port,
-                                },
-                            )) {
-                                error!("Error sending MatchCreatedData to player: {}", e);
-                            }
-                            self.players.remove(&player_id);
+                    for (player_id, player_tx) in matched_players {
+                        info!("Sending server deets to {}", player_id);
+                        if let Err(e) =
+                            player_tx.send(MatchmakingResponse::MatchCreated(MatchCreatedData {
+                                wan_ip: match_data.ip_address.clone(),
+                                lan_ip: match_data.lan_address.clone(),
+                                port: match_data.port as u16,
+                            }))
+                        {
+                            error!("Error sending MatchCreatedData to player: {}", e);
                         }
+                        self.players.remove(&player_id);
                     }
-                    Ok(OrchestratorContainerResponse::Error(data)) => {
-                        error!(
-                            "Error creating game server, putting players back: {}",
-                            data.error
-                        );
-                        for (player_id, _) in matched_players {
-                            self.queue.push_back(player_id);
-                        }
+                }
+                Err(status) => {
+                    error!(
+                        "Error creating game server via gRPC, putting players back: {}",
+                        status
+                    );
+                    for (player_id, _) in matched_players {
+                        self.queue.push_back(player_id);
                     }
-                    Err(e) => {
-                        error!("Error converting response: {}", e);
-                    }
-                },
-                Err(e) => {
-                    error!("Error getting http response from orchestrator: {}", e);
                 }
             }
         } else {
