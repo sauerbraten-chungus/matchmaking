@@ -1,11 +1,13 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PrefixComponent,
 };
 
 use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time};
 use tracing::{error, info};
+
+use crate::verification::generate_verification_code;
 
 // Include the generated protobuf code
 pub mod chungustrator {
@@ -118,21 +120,28 @@ impl Matchmaker {
 
         if self.queue.len() >= PLAYERS_PER_MATCH {
             let mut matched_players = Vec::new();
-            let mut auth_codes = HashMap::new();
+            let mut verification_codes = HashMap::new();
+            let mut used_codes = HashSet::new();
 
             for _ in 0..PLAYERS_PER_MATCH {
                 if let Some(player_id) = self.queue.pop_front() {
                     info!("Player {} put in match_players", player_id);
                     if let Some(player) = self.players.get(&player_id) {
                         matched_players.push((player_id.clone(), player.tx.clone()));
-                        // TODO: Generate proper auth codes for each player
-                        auth_codes.insert(player_id, String::from("auth_token_placeholder"));
+
+                        // Generate unique verification code for this player
+                        let mut verification_code = generate_verification_code();
+                        while used_codes.contains(&verification_code) {
+                            verification_code = generate_verification_code();
+                        }
+                        used_codes.insert(verification_code.clone());
+                        verification_codes.insert(player_id, verification_code);
                     }
                 }
             }
 
             // Create the gRPC request
-            let request = tonic::Request::new(chungustrator::MatchRequest { auth_codes });
+            let request = tonic::Request::new(chungustrator::MatchRequest { verification_codes });
 
             match self.grpc_client.create_match(request).await {
                 Ok(response) => {

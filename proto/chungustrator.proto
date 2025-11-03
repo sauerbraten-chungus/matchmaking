@@ -6,7 +6,7 @@ service Chungustrator {
 }
 
 message MatchRequest {
-    map<string, string> auth_codes = 1;
+    map<string, string> verification_codes = 1;
 }
 
 message MatchResponse {

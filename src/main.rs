@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 mod matchmaker;
+mod verification;
 
 #[derive(Debug)]
 enum QueueError {
