@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time};
 use tracing::{error, info};
 
-use crate::verification::generate_verification_code;
+use crate::verification::{self, generate_verification_code};
 
 // Include the generated protobuf code
 pub mod chungustrator {
@@ -49,6 +49,7 @@ pub struct MatchCreatedData {
     pub wan_ip: String,
     pub lan_ip: String,
     pub port: u16,
+    pub verification_code: String,
 }
 
 #[derive(Debug)]
@@ -127,13 +128,18 @@ impl Matchmaker {
                 if let Some(player_id) = self.queue.pop_front() {
                     info!("Player {} put in match_players", player_id);
                     if let Some(player) = self.players.get(&player_id) {
-                        matched_players.push((player_id.clone(), player.tx.clone()));
-
                         // Generate unique verification code for this player
                         let mut verification_code = generate_verification_code();
                         while used_codes.contains(&verification_code) {
                             verification_code = generate_verification_code();
                         }
+
+                        matched_players.push((
+                            player_id.clone(),
+                            player.tx.clone(),
+                            verification_code.clone(),
+                        ));
+
                         used_codes.insert(verification_code.clone());
                         verification_codes.insert(player_id, verification_code);
                     }
@@ -148,13 +154,14 @@ impl Matchmaker {
                     let match_data = response.into_inner();
                     info!("Game server container created with id {}", match_data.id);
 
-                    for (player_id, player_tx) in matched_players {
+                    for (player_id, player_tx, verification_code) in matched_players {
                         info!("Sending server deets to {}", player_id);
                         if let Err(e) =
                             player_tx.send(MatchmakingResponse::MatchCreated(MatchCreatedData {
                                 wan_ip: match_data.ip_address.clone(),
                                 lan_ip: match_data.lan_address.clone(),
                                 port: match_data.port as u16,
+                                verification_code: verification_code,
                             }))
                         {
                             error!("Error sending MatchCreatedData to player: {}", e);
@@ -167,7 +174,7 @@ impl Matchmaker {
                         "Error creating game server via gRPC, putting players back: {}",
                         status
                     );
-                    for (player_id, _) in matched_players {
+                    for (player_id, _, _) in matched_players {
                         self.queue.push_back(player_id);
                     }
                 }
