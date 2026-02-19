@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     response::Response,
@@ -95,7 +95,7 @@ async fn main() {
 
     // Get orchestrator gRPC address from environment or use default
     let orchestrator_addr =
-        std::env::var("CHUNGUSTRATOR_URL").unwrap_or_else(|_| "http://localhost:7000".to_string());
+        std::env::var("CHUNGUSTRATOR_URL").unwrap_or_else(|_| "http://127.0.0.1:7000".to_string());
 
     // Create gRPC client
     let grpc_client = ChungustratorClient::connect(orchestrator_addr)
@@ -116,15 +116,24 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, state: State<Arc<AppState>>) -> Response {
-    ws.on_upgrade(move |websocket| handle_socket(websocket, state.tx.clone()))
+#[derive(Deserialize)]
+struct WsParams {
+    player_id: String,
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Query(params): Query<WsParams>,
+    state: State<Arc<AppState>>,
+) -> Response {
+    ws.on_upgrade(move |websocket| handle_socket(websocket, state.tx.clone(), params.player_id))
 }
 
 async fn handle_socket(
     socket: WebSocket,
     matchmaker_tx: mpsc::UnboundedSender<matchmaker::MatchmakingMessage>,
+    player_id: String,
 ) {
-    let player_id = uuid::Uuid::new_v4().to_string();
 
     let (player_tx, mut player_rx) = mpsc::unbounded_channel::<matchmaker::MatchmakingResponse>();
 
