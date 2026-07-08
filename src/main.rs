@@ -95,12 +95,18 @@ async fn main() {
 
     // Get orchestrator gRPC address from environment or use default
     let orchestrator_addr =
-        std::env::var("CHUNGUSTRATOR_URL").unwrap_or_else(|_| "http://127.0.0.1:7000".to_string());
+        std::env::var("CHUNGUSTRATOR_URL").unwrap_or_else(|_| "http://127.0.0.1:7100".to_string());
 
-    // Create gRPC client
-    let grpc_client = ChungustratorClient::connect(orchestrator_addr)
-        .await
-        .expect("Failed to connect to orchestrator gRPC service");
+    // Create gRPC client (retry until chungustrator is reachable — start order doesn't matter)
+    let grpc_client = loop {
+        match ChungustratorClient::connect(orchestrator_addr.clone()).await {
+            Ok(client) => break client,
+            Err(e) => {
+                error!("chungustrator not reachable at {orchestrator_addr}: {e}; retrying in 2s");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    };
 
     let (tx, rx) = mpsc::unbounded_channel();
     matchmaker::Matchmaker::new(rx, grpc_client);
@@ -112,7 +118,10 @@ async fn main() {
         .route("/ws", any(ws_handler))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:5000").await.unwrap();
+    let port = std::env::var("MATCHMAKING_PORT").unwrap_or_else(|_| "5100".to_string());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 

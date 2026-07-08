@@ -1,18 +1,18 @@
-# CLAUDE.md — matchmaking
+# AGENTS.md — matchmaking
 
 ## Overview
 
 WebSocket-based matchmaking queue. Batches players and requests game server provisioning from chungustrator via gRPC. Generates 6-digit verification codes for player authentication.
 
 - **Language**: Rust (Axum + Tonic)
-- **Port**: 5000
+- **Port**: 5100 (default; override with `MATCHMAKING_PORT`)
 - **Status**: Work in progress
 
 ## Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/` | GET | Health check |
+| `/` | GET | Returns a static `"Hello, World!"` string (not a real health check — touches nothing) |
 | `/ws?player_id=xyz` | WebSocket | Matchmaking queue |
 
 ## WebSocket Protocol
@@ -23,7 +23,7 @@ WebSocket-based matchmaking queue. Batches players and requests game server prov
 
 **Server → Client:**
 - `JoinQueue` — joined successfully, returns queue position
-- `MatchFound` — match is being created
+- `MatchFound` — defined in the protocol but **never sent** by current code
 - `MatchCreated` — match ready, returns `{wan_ip, lan_ip, port, verification_code}`
 - `QueuePosition` — current position response
 - `LeaveQueue` — left queue
@@ -33,7 +33,10 @@ WebSocket-based matchmaking queue. Batches players and requests game server prov
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `CHUNGUSTRATOR_URL` | gRPC address of orchestrator | `http://127.0.0.1:7000` |
+| `MATCHMAKING_PORT` | Port the WebSocket/HTTP server binds | `5100` |
+| `CHUNGUSTRATOR_URL` | gRPC address of orchestrator | `http://127.0.0.1:7100` |
+
+Ports moved off 5000/7000 because macOS's AirPlay Receiver (`ControlCenter`) squats both system-wide.
 
 ## Key Files
 
@@ -50,7 +53,7 @@ WebSocket-based matchmaking queue. Batches players and requests game server prov
 
 ```bash
 cargo build
-cargo run             # binds 0.0.0.0:5000
+cargo run             # binds 0.0.0.0:5100 (MATCHMAKING_PORT to override)
 cargo fmt && cargo clippy
 ```
 
