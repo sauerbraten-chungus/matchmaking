@@ -146,6 +146,15 @@ impl Matchmaker {
                 }
             }
 
+            // Phase 1: match is found -- tell players immediately, since the
+            // container boot behind CreateMatch takes seconds. MatchCreated
+            // follows with the address and verification code.
+            for (player_id, player_tx, _) in &matched_players {
+                if let Err(e) = player_tx.send(MatchmakingResponse::MatchFound) {
+                    error!("Error sending MatchFound to player {}: {}", player_id, e);
+                }
+            }
+
             // Create the gRPC request
             let request = tonic::Request::new(chungustrator::MatchRequest { verification_codes });
 

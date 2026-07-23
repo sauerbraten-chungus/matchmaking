@@ -23,7 +23,7 @@ WebSocket-based matchmaking queue. Batches players and requests game server prov
 
 **Server → Client:**
 - `JoinQueue` — joined successfully, returns queue position
-- `MatchFound` — defined in the protocol but **never sent** by current code
+- `MatchFound` — match selected and server provisioning has started
 - `MatchCreated` — match ready, returns `{wan_ip, lan_ip, port, verification_code}`
 - `QueuePosition` — current position response
 - `LeaveQueue` — left queue

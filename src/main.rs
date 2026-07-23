@@ -52,12 +52,6 @@ struct MatchFoundData {
 }
 
 #[derive(Serialize)]
-struct MatchCreatedData {
-    ip: String,
-    port: String,
-}
-
-#[derive(Serialize)]
 struct JoinErrorData {
     message: String,
 }
@@ -143,7 +137,6 @@ async fn handle_socket(
     matchmaker_tx: mpsc::UnboundedSender<matchmaker::MatchmakingMessage>,
     player_id: String,
 ) {
-
     let (player_tx, mut player_rx) = mpsc::unbounded_channel::<matchmaker::MatchmakingResponse>();
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
